@@ -35,11 +35,16 @@ Purpose: expose the logged-in Tencent WorkBuddy Desktop session as an OpenAI/Ant
 
 ## Ops
 
-- Start: `G:\omp works\workbuddy-desktop-api\start.cmd` (or hub: `python main.py` with HOST/PORT env). Gateway must be running whenever omp uses workbuddy models.
+- **Start (user-side): double-click `gateway-window.cmd`** - opens a visible status window:
+  - shows live gateway logs (`[gw]` lines), status line every 30s: `[STATUS] RUNNING pid=... port=8080 open=...`
+  - commands: `r`=restart, `s`=stop, `c`=clear screen, `q`=quit (stops child), `?`=help
+  - logs are ALSO tee'd to `gateway.log` in the repo root (rotates at 5 MB -> gateway.log.1) - readable from outside the window
+- **Autostart:** `install-svc.cmd` copies `WorkBuddyGateway.cmd` into the user Startup folder (no admin needed; schtasks ONLOGON needs elevation on this machine, so this is the chosen mechanism) and opens the window now. `uninstall-svc.cmd` removes the entry.
+- Gateway must be running whenever omp uses workbuddy models. If port 8080 is already busy, a second window refuses to spawn a duplicate (`r` force-restarts only its own child).
 - Session token refresh is handled inside the gateway (refreshToken in the Desktop info file).
 - Accounts: WorkBuddy free quota models; heavy use hits rate limits (upstream 429) - gateway surfaces errors as-is.
 
-## Caveats
+## Notes for agent sessions
 
-- Non-official use of the WorkBuddy backend (per project LICENSE/README) - personal/local use only, account ToS risk.
-- Gateway process is tied to the omp session when started via hub; for persistence across reboots use Task Scheduler at logon running start.cmd.
+- `supervisor.py` child decode fix: child stdout is UTF-8 (`PYTHONIOENCODING=utf-8` set in spawn env); read with `encoding="utf-8", errors="replace"` - without this the tail thread dies with `UnicodeDecodeError: 'gbk' codec`.
+- Processes started from an agent session get cleaned up when the session/hub ends - the user starts the window themselves; logs stay readable via `gateway.log`.

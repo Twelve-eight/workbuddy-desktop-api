@@ -1,8 +1,9 @@
 @echo off
-rem WorkBuddy desktop gateway - standalone launcher
-rem Starts the OpenAI-compatible gateway for local WorkBuddy free models.
-rem Usage: double-click, or run via Task Scheduler at logon.
+rem Foreground launcher for the WorkBuddy gateway (logs to console only).
+rem Prefer gateway-window.cmd (visible status window with r/s/q controls).
+chcp 65001 >nul
+title WorkBuddy Gateway
+cd /d "%~dp0"
 set HOST=127.0.0.1
 set PORT=8080
-cd /d "%~dp0"
 ".venv\Scripts\python.exe" main.py

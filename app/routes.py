@@ -108,7 +108,7 @@ async def _do_discover() -> list:
             }
         remote = await list_remote_models(creds)
         if remote:
-            models = remote
+            models = _append_extra_models(remote)
     except Exception as e:
         print(f"[模型发现] 云端列表拉取失败，使用内置列表: {e}")
     async with _models_lock:

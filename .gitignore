@@ -12,3 +12,6 @@ venv/
 *.bak
 .env
 NUL
+
+gateway.log
+gateway.log.1
