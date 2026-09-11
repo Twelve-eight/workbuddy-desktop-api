@@ -44,6 +44,21 @@ Purpose: expose the logged-in Tencent WorkBuddy Desktop session as an OpenAI/Ant
 - Session token refresh is handled inside the gateway (refreshToken in the Desktop info file).
 - Accounts: WorkBuddy free quota models; heavy use hits rate limits (upstream 429) - gateway surfaces errors as-is.
 
+## BUGFIX 2026-09-12: deepseek-v4.1-flash "no body output" in omp
+
+**Symptom (user):** v4.1 in omp shows only grey reasoning text, no body; folding the reasoning block leaves nothing; a single call runs for minutes; session history is not persisted; same request sometimes answered twice. Other providers/models fine.
+
+**Root cause (proven by probes):** upstream `www.workbuddy.ai/v2/chat/completions` on **deepseek-v4.1-flash** with ANY `tools` in the body switches to tool-call mode: `reasoning_content` streams, `content` stays 0, hundreds of `tool_calls` chunks, `finish_reason=tool_calls`. `tool_choice="none"` is IGNORED (probe: tools+none -> 82 toolcall chunks, finish=tool_calls). Without tools: content 3864-4817 chars, finish=stop, clean `[DONE]`. omp is an agent and ALWAYS sends tools -> gateway passed them through -> upstream tool loop (omp re-sends the same truncated query, never gets body, call hangs, session never persists; omp's retry then duplicates responses).
+
+**Fix:** `app/routes.py` `chat_completions` - strip `tools_dict` for models whose name starts with `deepseek-v4.1` (tools execute client-side in the agent; upstream only needs to generate text).
+
+**Verified (patched gateway, model=deepseek-v4.1-flash + tools):**
+- probe via gateway 8080: `content=13..4067`, `toolcall_chunks=0`, `finish=stop`, `[DONE]` received.
+- control: hy3 + tools unchanged (content 4005, finish=stop).
+- real omp: `omp -p --model=workbuddy/deepseek-v4.1-flash "维也纳是哪个国家的首都?"` -> "奥地利.维也纳是奥地利的首都." in 4.9s; second run "蒙娜丽莎的作者" -> answered in 5.3s, session file updated (workbuddy model lines present).
+
+**Probe scripts (all removed after use):** `_probe_effort.py` (no-effort vs high-effort field distribution), `_probe_tools.py` / `_probe_tc.py` (tools variants), `_verify_fix.py` (patched gateway check).
+
 ## Notes for agent sessions
 
 - `supervisor.py` child decode fix: child stdout is UTF-8 (`PYTHONIOENCODING=utf-8` set in spawn env); read with `encoding="utf-8", errors="replace"` - without this the tail thread dies with `UnicodeDecodeError: 'gbk' codec`.
