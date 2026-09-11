@@ -87,3 +87,24 @@ The definitive difference is architectural. CangShui (and lovingfish/workbuddy-c
 **What CangShui does right:** model passthrough, request passthrough (messages/tools/reasoning as-is), SSE passthrough with only empty-field cleanup, account pool + cooldown/auth refresh. It has no query builder, no think-tag parsing, no content buffering. That is the correct shape for this upstream.
 
 **Lessons for future proxies:** relay wire formats unmodified; never convert structured tool_calls/reasoning to text and back; honor client effort parameters (or delete them); keep the gateway stateless unless the upstream forces state.
+
+## INVESTIGATION 2026-09-12: "same request processed multiple times" - attribution
+
+User reported CangShui also showing the same request handled repeatedly. Systematic capture (relay on 8320 logging request md5 + count while forwarding to 8317) proved:
+
+**Stable behavior: NO duplicate POSTs from omp.** Direct 8317 tests (simple, tool tasks, multi-tool long task, `:max`, with/without session history) all emitted unique request bodies - md5 unique per request, 0 repeats. 24s multi-tool task: 4 requests, 4 distinct md5.
+
+**Two false alarms found on the debug path itself:**
+1. Multiple stale relay processes listening on the same port (8320) after repeated `start /b` starts - requests split across processes, looks like gateway hangs/dups. Killed all; use `hub start` for process management.
+2. Relay bugs (`self.method` vs `self.command` AttributeError; empty `Authorization` header passed to upstream -> 400) made every relayed request fail without response, so omp retried - the "dup storm" in relay logs was our own tool's artifact.
+
+**Real upstream quirk found:** upstream (and CangShui passthrough) returns HTTP 400 `11128 "first message is not system prompt"` when the first message is not `role: system`. Real omp requests always start with system, so unaffected; raw curl probes must too.
+
+**CangShui side:** single account (twelve-eight) -> pool size 1. Request loop `for attempt < poolSize` retries only non-streaming 429/401 (markCooldown -> next account); streaming path (which omp uses) has no retry. Account lock (`acc.lock`) serializes concurrent requests per account by design (comment: prevents Tencent 11128 risk-control when omp fires title-generation + main dialog in parallel). So duplicates seen in CangShui console are **separate reqIDs = separate POSTs from omp**.
+
+**Config risks in `~/.omp/agent/config.yml` (not currently reproducing):**
+- `retry: maxRetries: 9999, baseDelayMs: 500, maxDelayMs: 0` - near-unbounded immediate re-issue if anything classifies as transient; maxDelayMs 0 also aborts retry-hint waits (contradictory).
+- `agentAdvisor.reviewer: "on"` - parallel reviewer request on same account (CangShui serializes via account lock).
+- `defaultThinkingLevel: auto` + `:max` on model roles - long thinking before content; if a stream dies mid-thinking omp may classify empty completion and re-issue (bounded to 2 by `withEmptyCompletionRetry`, unlike the 9999 retry).
+
+**Attribution for the user's log (AutoAnthonyRelics 05:18-05:21):** 17 turns, context 90K->124K, 3 "User interjection is priority" repeats = user interruptions re-injected the directive; model re-stated the same root-cause discovery across turns (normal agent loop over one task), not a duplicate request. All md5-unique in later controlled runs.
