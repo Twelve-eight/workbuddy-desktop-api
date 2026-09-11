@@ -63,3 +63,27 @@ Purpose: expose the logged-in Tencent WorkBuddy Desktop session as an OpenAI/Ant
 
 - `supervisor.py` child decode fix: child stdout is UTF-8 (`PYTHONIOENCODING=utf-8` set in spawn env); read with `encoding="utf-8", errors="replace"` - without this the tail thread dies with `UnicodeDecodeError: 'gbk' codec`.
 - Processes started from an agent session get cleaned up when the session/hub ends - the user starts the window themselves; logs stay readable via `gateway.log`.
+
+## RETIREMENT 2026-09-12: full migration to CangShui workbuddy-gateway
+
+User switched omp to CangShui's gateway (`G:\cangshuiworkbuddygateway\workbuddy-gateway-windows-amd64.exe serve`, port 8317, creds in its own `workbuddy.json`). This repo's 8080 gateway is no longer used by omp.
+
+**omjp wiring (final):** `~/.omp/agent/models.yml` workbuddy provider -> `baseUrl: http://127.0.0.1:8317/v1`, model `deepseek-v4.1-flash` (passthrough; the listed `deepseek-v4-flash` id returns upstream 11102 "service info not found"). NO `thinking:` block - adding one made omp hang; plain `reasoning: true` works. Desktop script `I:\Desktop\omp-workbuddy.cmd` now launches the CangShui binary. Verified: simple task 5s, full agent task (read + summarize) 9.7s.
+
+## Retrospective: why OUR gateway had the problems
+
+The definitive difference is architectural. CangShui (and lovingfish/workbuddy-cliproxy) are **stateless transparent relays**: pass model & stream through, fix only auth. Our 8080 gateway **reconstructed the stream** - and every layer of that reconstruction produced a distinct failure:
+
+1. **Text-prompt assembly instead of passthrough.** We concatenated messages into a plain-text `query` (roles flattened to "user: / assistant: / tool: [tool_result id=..]"), embedding tool schemas as prose. That removed the structured tool_calls contract; the "tool loop" we then diagnosed was partly an artifact of that flattening, and our "fix" (strip tools) leaked DSML text when omp's agent prompt still demanded tool use.
+
+2. **Stream reconstitution (THINK_OPEN/THINK_CLOSE wrapping).** We pulled `reasoning_content` out of deltas, wrapped it as ` " thinking..response"` text, re-parsed it out, buffered content, then re-emitted reasoning_content. Every hop is a lossy transform; the correct invariants (reasoning stays in reasoning_content, content stays in content, tool_calls stay structured, finish_reason arrives on the terminal chunk) were each violated or at risk. omp's consumer (openai-completions.ts) strictly requires `finish_reason` and does not understand non-standard delta shapes.
+
+3. **Hardcoded `reasoning_effort=medium`.** Probes proved: with tools, effort=medium made upstream emit content=0 (body eaten by reasoning); CangShui's applyThinkingRules documents the CodeBuddy contract - only forward effort when the client explicitly set it, use `reasoning_summary=auto`, DELETE on off/none. We overrode omp's real effort instead of relaying it.
+
+4. **QueryGuard truncation at 102K.** The 102K window is upstream's trainer-set cap; our truncation dropped early tool round-trips and made the model re-read files (amnesia loop). Compression of tool results helped but treated the symptom of assembling oversized queries at all.
+
+5. **Wrong-dimension "fixes".** strip-tools (commit 4f3228b) misread a normal tool-use turn as a loop; raising the window to 1MB (reverted) contradicted the real 102K cap. The churn itself is the lesson: when a transparent relay exists upstream, don't build a smart middlebox.
+
+**What CangShui does right:** model passthrough, request passthrough (messages/tools/reasoning as-is), SSE passthrough with only empty-field cleanup, account pool + cooldown/auth refresh. It has no query builder, no think-tag parsing, no content buffering. That is the correct shape for this upstream.
+
+**Lessons for future proxies:** relay wire formats unmodified; never convert structured tool_calls/reasoning to text and back; honor client effort parameters (or delete them); keep the gateway stateless unless the upstream forces state.
