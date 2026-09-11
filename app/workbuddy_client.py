@@ -298,7 +298,11 @@ class WorkBuddyClient:
             "stream": stream,
         }
         if thinking:
-            body["reasoning_effort"] = "medium"
+            # 上游 CodeBuddy 规范(参考 workbuddy-gateway/CangShui):客户端显式
+            # 思考时设 reasoning_summary=auto 让上游自行决定深度;绝不硬编码
+            # 具体 effort - 实测 effort=medium 时正文被思考吞掉(content=0),
+            # 且腾讯内容安全对不规范 effort 会拦截(11128).off/none 时删除.
+            body["reasoning_summary"] = "auto"
         norm_tools = self._normalize_tools(tools)
         if norm_tools:
             body["tools"] = norm_tools

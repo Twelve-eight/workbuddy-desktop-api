@@ -302,6 +302,15 @@ def build_query_from_messages(
             tool_call_id = getattr(msg, 'tool_call_id', '') or ''
             clean = re.sub(r'\[TOOL_RESULT\]\s*', '', content, flags=re.IGNORECASE)
             clean = clean.strip()
+            # 工具结果压缩:上游窗口 ~102K 字符,而 agent 工具结果(read 整个文件等)
+            # 单条可达 20K+;多轮累积瞬间撑爆窗口,早期历史被静默丢弃,模型
+            # "失忆"后反复重读同一批文件,永不收敛到正文.对超长结果保留
+            # 头部+尾部(模型通常只需关键片段),大幅压缩每轮 query 体积.
+            max_tool_chars = int(__import__("os").getenv("WORKBUDDY_TRUNCATE_TOOL_RESULTS", "3000"))
+            if len(clean) > max_tool_chars:
+                head = clean[: int(max_tool_chars * 0.6)]
+                tail = clean[-int(max_tool_chars * 0.4):]
+                clean = f"{head}\n..[tool_result truncated {len(clean)}->{max_tool_chars} chars]..\n{tail}"
             content = f"[tool_result id={tool_call_id[:8]}] {clean}"
 
         query_parts.append(f"{role}: {content}")
