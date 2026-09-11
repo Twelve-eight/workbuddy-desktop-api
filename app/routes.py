@@ -431,13 +431,6 @@ async def chat_completions(
     # 转换 tools 为字典列表
     tools_dict = [t.dict() if hasattr(t, 'dict') else t for t in request.tools] if request.tools else None
 
-    # deepseek-v4.1-flash 上游:任何 tools 都会进入工具调用模式,正文被 tool_calls
-    # 取代且不断循环(tool_choice=none 也被忽略),导致客户端永远收不到正文.
-    # 工具执行是客户端(agent)的工作,上游只需生成正文 -> 对此模型剥离 tools.
-    if tools_dict and str(request.model or "").startswith("deepseek-v4.1"):
-        print("[tools-strip] deepseek-v4.1-flash: stripping tools to avoid upstream tool loop")
-        tools_dict = None
-
     # 提取媒体和文本文件
     query_text, base64_medias, text_files, processed_msgs = extract_medias_from_messages(request.messages)
     effective_model = request.model
