@@ -97,7 +97,11 @@ class WorkBuddyClient:
     def _prepare_body(self, body: dict, stream: bool) -> dict:
         out = dict(body)
         out["model"] = bare_model(out.get("model", ""))
-        # 上游只支持流式，非流式由本层聚合
+        # 上游要求 messages 首条必须是 system,否则 11128
+        msgs = out.get("messages")
+        if isinstance(msgs, list) and msgs and msgs[0].get("role") != "system":
+            out["messages"] = [{"role": "system", "content": "You are a helpful assistant."}, *msgs]
+        # 上游只支持流式,非流式由本层聚合
         out["stream"] = True
         if stream:
             out["stream_options"] = {"include_usage": True}

@@ -42,19 +42,19 @@ from typing import Any, Optional
 
 import httpx
 
-API_BASE = "https://copilot.tencent.com"
+API_BASE = "https://www.workbuddy.ai"
 
 # `%LOCALAPPDATA%/CodeBuddyExtension` 来自 FilePathServiceImpl：
 #   win32  : <home>/AppData/Local/<DATA_DIR_NAME>
 #   darwin : <home>/Library/Application Support/<DATA_DIR_NAME>
 #   linux  : <home>/.local/share/<DATA_DIR_NAME>
 DATA_DIR_NAME = "CodeBuddyExtension"
-AUTH_FILE_NAME = "workbuddy-desktop.info"
+AUTH_FILE_NAME = "workbuddy-desktop-ai.info"
 
 # 服务端从 UA 解析客户端版本，缺失会 403
 CLIENT_VERSION = "5.5.4"
 API_UA = f"WorkBuddy/{CLIENT_VERSION}"
-DEFAULT_DOMAIN = "www.codebuddy.cn"
+DEFAULT_DOMAIN = "www.workbuddy.ai"
 
 # accessToken 提前多少毫秒视为过期
 EXPIRE_SKEW_MS = 5 * 60 * 1000
