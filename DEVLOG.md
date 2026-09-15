@@ -108,3 +108,26 @@ User reported CangShui also showing the same request handled repeatedly. Systema
 - `defaultThinkingLevel: auto` + `:max` on model roles - long thinking before content; if a stream dies mid-thinking omp may classify empty completion and re-issue (bounded to 2 by `withEmptyCompletionRetry`, unlike the 9999 retry).
 
 **Attribution for the user's log (AutoAnthonyRelics 05:18-05:21):** 17 turns, context 90K->124K, 3 "User interjection is priority" repeats = user interruptions re-injected the directive; model re-stated the same root-cause discovery across turns (normal agent loop over one task), not a duplicate request. All md5-unique in later controlled runs.
+
+## OPERATIONS 2026-09-15: CangShui account pool (multiple intl accounts at startup)
+
+Verified against the real binary (`G:\cangshuiworkbuddygateway\workbuddy-gateway-windows-amd64.exe`, source clone at `/tmp/wbg`).
+
+**Credential discovery is CWD-relative.** `collectConfiguredAuthPaths()` scans `os.ReadDir(".")`; `workbuddy-status.json` is explicitly excluded. A file joins the pool only if its name starts with `workbuddy` and ends with `.json`. Consequence: launching the exe with the wrong working directory yields an EMPTY pool (`accounts: null` in the snapshot, every request 503 `no_available_account`). Evidence: `I:\Desktop\workbuddy-status.json` written 10:02 today had `"accounts": null`; `status` run in `I:\Desktop` prints `未找到有效凭据: .. open workbuddy.json: The system cannot find the file specified`, while the same command in the credential dir lists the account.
+
+**Adding INTL accounts (each login into its own file - a bare `login -intl` OVERWRITES `workbuddy.json`):**
+```
+workbuddy-gateway-windows-amd64.exe login -intl -auth "G:\cangshuiworkbuddygateway\workbuddy-intl-2.json"
+workbuddy-gateway-windows-amd64.exe login -intl -auth "G:\cangshuiworkbuddygateway\workbuddy-intl-3.json"
+```
+Intl login is browser-based (email / code / SSO), 15-minute wait window; the file records `edition: "intl"` and `serve`/`refresh` route it to `www.workbuddy.ai` automatically. cn + intl accounts may share one pool.
+
+**Three ways to assemble the pool at startup:** (1) auto-discovery - run `serve` with CWD = credential dir; (2) `serve -auth a.json,b.json` (order preserved, round-robin starts at the first); (3) `serve -auth-dir <dir>`.
+
+**Hot reload:** `serve` rescans every `-reload-interval` seconds (default 5, 0 = off). `login -auth <new file>` against a RUNNING gateway adds that account without restart; deleting the file drops it; re-login replaces credentials in place and clears a disabled marker.
+
+**Smoke test performed:** pool 1 (`workbuddy.json`, intl, 0xlay1nn, exp 2027-09-12) -> copied to `workbuddy-intl-2.json` -> `[Reload] 发现新账号凭据 workbuddy-intl-2.json(国际站),已自动加入账号池`, snapshot showed 2 entries; two requests logged `[#1] .. (账号 workbuddy.json [国际站])` and `[#2] .. (账号 workbuddy-intl-2.json [国际站])` = round-robin; deleting the copy returned the pool to 1. Launcher-started instance served a `system`-first request (200 `"OK"`) and wrote its snapshot into the credential dir, proving the fixed CWD.
+
+**Launcher `I:\Desktop\omp-workbuddy.cmd` (rewritten):** `cd /d "G:\cangshuiworkbuddygateway"` first, refuses to double-start when 8317 is already listening. Without the `cd /d`, a double-click launch inherited the .cmd's directory, which is exactly the empty-pool failure above.
+
+**Note:** `status` / `monitor` must also run with CWD = credential dir (they read `workbuddy-status.json` from `.`).
