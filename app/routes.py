@@ -315,6 +315,245 @@ def _split_think(text: str) -> Tuple[str, str]:
 
 # ─── 响应构建 ─────────────────────────────────────────────────
 
+def _question_options_text(tool_calls: list) -> str:
+    """把 WorkBuddy `AskUserQuestion` / RikkaHub `ask_user` 转成可见选项文本。"""
+    ask_names = {"askuserquestion", "ask_user_question", "ask_followup_question", "question", "ask_user"}
+    blocks = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        name = (fn.get("name") or "").lower()
+        if name not in ask_names:
+            continue
+        raw = fn.get("arguments") or ""
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (json.JSONDecodeError, TypeError):
+            continue
+        questions = args.get("questions") or []
+        if isinstance(questions, dict):
+            questions = [questions]
+        for i, q in enumerate(questions, 1):
+            if not isinstance(q, dict):
+                continue
+            title = (q.get("question") or "").strip() or f"选项 {i}"
+            opts = q.get("options") or []
+            lines = [f"### {title}"]
+            multi = q.get("multiSelect") is True or q.get("multiple") is True or (q.get("selection_type") or "") == "multi"
+            if multi:
+                lines.append("（可多选）")
+            for j, opt in enumerate(opts, 1):
+                if isinstance(opt, str):
+                    label, desc = opt, ""
+                elif isinstance(opt, dict):
+                    label = (opt.get("label") or "").strip()
+                    desc = (opt.get("description") or "").strip()
+                else:
+                    continue
+                if not label:
+                    continue
+                line = f"{j}. {label}"
+                if desc:
+                    line += f" — {desc}"
+                lines.append(line)
+            blocks.append("\n".join(lines))
+    return "\n\n".join(blocks).strip()
+
+
+def _merge_question_visibility(content: str | None, tool_calls: list | None) -> str | None:
+    """保证交互提问选项在 content 中可见（RikkaHub 有 tool_calls 时也可能只看正文）。"""
+    qtext = _question_options_text(tool_calls)
+    if not qtext:
+        return content
+    base = (content or "").strip()
+    if not base:
+        return qtext
+    if qtext in base:
+        return content
+    return base + "\n\n" + qtext
+
+
+def _question_only_tool_calls(tool_calls: list | None) -> bool:
+    """是否仅为交互提问类工具（无其它业务工具）。"""
+    ask = {"askuserquestion", "ask_user_question", "ask_followup_question", "question", "ask_user"}
+    names = set()
+    for tc in tool_calls or []:
+        fn = (tc or {}).get("function") or {}
+        name = (fn.get("name") or "").strip().lower()
+        if name:
+            names.add(name)
+    return bool(names) and names.issubset(ask)
+
+
+def _option_label(opt) -> str:
+    if isinstance(opt, str):
+        return opt.strip()
+    if isinstance(opt, dict):
+        label = (opt.get("label") or "").strip()
+        desc = (opt.get("description") or "").strip()
+        if label and desc:
+            return f"{label} — {desc}"
+        return label or desc
+    return ""
+
+
+def _rewrite_question_to_ask_user(tool_calls: list) -> list:
+    """把 WorkBuddy `AskUserQuestion` 改写成 RikkaHub 本地工具 `ask_user`。
+
+    WorkBuddy schema（app.asar）:
+      questions: [{ question, header?, options:[{label,description}] (2-4), multiSelect? }] (1-4)
+    RikkaHub schema:
+      questions: [{ id, question, options: string[], selection_type: text|single|multi }]
+    注意：WorkBuddy **不是** MiMo Desktop 的 `question` 工具。
+    """
+    ask_names = {"askuserquestion", "ask_user_question", "ask_followup_question", "question", "ask_user"}
+    out = []
+    qi = 0
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        name = (fn.get("name") or "").lower()
+        if name not in ask_names:
+            out.append(tc)
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}") if isinstance(fn.get("arguments"), str) else (fn.get("arguments") or {})
+        except (json.JSONDecodeError, TypeError):
+            out.append(tc)
+            continue
+        if name == "ask_user":
+            qs = args.get("questions") or []
+            changed = False
+            new_qs = []
+            for q in qs:
+                if isinstance(q, dict) and not q.get("id"):
+                    qi += 1
+                    q = {**q, "id": f"q{qi}"}
+                    changed = True
+                new_qs.append(q)
+            if not changed:
+                out.append(tc)
+                continue
+            args = {**args, "questions": new_qs}
+        else:
+            qs_in = args.get("questions") or []
+            if isinstance(qs_in, dict):
+                qs_in = [qs_in]
+            new_qs = []
+            for q in qs_in:
+                if not isinstance(q, dict):
+                    continue
+                qi += 1
+                opts = q.get("options") or []
+                labels = [x for x in (_option_label(o) for o in opts) if x]
+                if q.get("multiSelect") is True or q.get("multiple") is True:
+                    st = "multi"
+                elif labels:
+                    st = "single"
+                else:
+                    st = "text"
+                new_qs.append({
+                    "id": q.get("id") or f"q{qi}",
+                    "question": q.get("question") or "",
+                    "options": labels,
+                    "selection_type": st,
+                })
+            args = {"questions": new_qs}
+        out.append({
+            **tc,
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        })
+    return out
+
+
+def _desktop_question_tool() -> dict:
+    """WorkBuddy `AskUserQuestion` 工具定义（非 MiMo question）。
+
+    schema 来自 app.asar：questions 1-4；options 2-4，label≤50，header≤12，可选 multiSelect。
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": "AskUserQuestion",
+            "description": (
+                "Ask the user one or more clarification questions with selectable options. "
+                "Use when you need the user to choose before continuing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string"},
+                                "header": {"type": "string", "maxLength": 12},
+                                "options": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": 4,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string", "maxLength": 50},
+                                            "description": {"type": "string"},
+                                        },
+                                        "required": ["label"],
+                                    },
+                                },
+                                "multiSelect": {"type": "boolean"},
+                            },
+                            "required": ["question", "options"],
+                        },
+                    }
+                },
+                "required": ["questions"],
+            },
+        },
+    }
+
+
+def _client_has_ask_user_only(tools_dict: list | None) -> bool:
+    """客户端只声明了 RikkaHub ask_user、未声明 WorkBuddy 提问工具。"""
+    if not tools_dict:
+        return False
+    names = set()
+    for t in tools_dict:
+        fn = (t or {}).get("function") or {}
+        n = (fn.get("name") or t.get("name") or "").lower()
+        if n:
+            names.add(n)
+    wb_ask = {"askuserquestion", "ask_user_question", "ask_followup_question", "question"}
+    has_rikka = "ask_user" in names
+    has_wb = bool(names & wb_ask)
+    return has_rikka and not has_wb
+
+
+def _ensure_desktop_question_tool(tools_dict: list | None) -> list | None:
+    """客户端带 RikkaHub `ask_user` 时，向 WorkBuddy 补注入 `AskUserQuestion`。"""
+    if not tools_dict:
+        return tools_dict
+    names = set()
+    for t in tools_dict:
+        fn = (t or {}).get("function") or {}
+        n = (fn.get("name") or t.get("name") or "").lower()
+        if n:
+            names.add(n)
+    wb_ask = {"askuserquestion", "ask_user_question", "ask_followup_question", "question"}
+    if names & wb_ask or "ask_user" not in names:
+        return tools_dict
+    return list(tools_dict) + [_desktop_question_tool()]
+
+
 def _build_response(
     msg_id: str, model: str,
     content: str = None, tool_calls: list = None,
@@ -430,6 +669,8 @@ async def chat_completions(
 
     # 转换 tools 为字典列表
     tools_dict = [t.dict() if hasattr(t, 'dict') else t for t in request.tools] if request.tools else None
+    prefer_ask_user = _client_has_ask_user_only(tools_dict)
+    tools_dict = _ensure_desktop_question_tool(tools_dict)
 
     # 提取媒体和文本文件
     query_text, base64_medias, text_files, processed_msgs = extract_medias_from_messages(request.messages)
@@ -457,7 +698,9 @@ async def chat_completions(
     # 构建查询
     passthrough_mode = request.passthrough or config_manager.config.tools_passthrough
 
-    thinking = bool(request.reasoning_effort)
+    # 思考强度纯透传：客户端传了才开启并下传
+    reasoning_effort = (request.reasoning_effort or "").strip().lower() or None
+    thinking = bool(reasoning_effort)
     client = WorkBuddyClient(account)
 
     # 上游无状态（copilot.tencent.com/v2/chat/completions 没有 conversation 概念）：
@@ -494,7 +737,9 @@ async def chat_completions(
                              raw_messages=request.messages if needs_compression else None,
                              raw_tools=tools_dict if needs_compression else None,
                              raw_passthrough=passthrough_mode if needs_compression else None,
-                             effective_model=effective_model),
+                             effective_model=effective_model,
+                             reasoning_effort=reasoning_effort,
+                             prefer_ask_user=prefer_ask_user),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -513,7 +758,7 @@ async def chat_completions(
     try:
         content, think_content, usage, citations, native_tool_calls = await client.call_api(
             query, thinking, effective_model, multi_medias,
-            tools=tools_dict)
+            tools=tools_dict, reasoning_effort=reasoning_effort)
 
         # 保存用量
         if usage:
@@ -545,9 +790,11 @@ async def chat_completions(
         content = _strip_tool_name_prefix(content, tool_names)
 
         if tool_calls:
+            visible = _merge_question_visibility(content, tool_calls)
+            out_calls = _rewrite_question_to_ask_user(tool_calls) if prefer_ask_user else tool_calls
             return _build_response(
                 msg_id, request.model,
-                content=None, tool_calls=tool_calls,
+                content=visible, tool_calls=out_calls,
                 reasoning=think_content,
                 finish_reason="tool_calls", usage=usage
             )
@@ -579,6 +826,8 @@ async def _stream_response(
     raw_tools: list = None,
     raw_passthrough: bool = False,
     effective_model: str = None,
+    prefer_ask_user: bool = False,
+    reasoning_effort: str | None = None,
 ):
     """流式响应生成器。
 
@@ -630,7 +879,10 @@ async def _stream_response(
             last_usage = None
             upstream_finish_reason = ""
 
-            async for sse_data in client.stream_api(query, thinking, model, multi_medias, tools=tools):
+            async for sse_data in client.stream_api(
+                query, thinking, model, multi_medias, tools=tools,
+                reasoning_effort=reasoning_effort,
+            ):
                 ev_type = sse_data.get("type")
                 if ev_type == "tool_calls":
                     # 上游原生 tool_calls（已按 index 合并）→ 直接累加
@@ -696,9 +948,15 @@ async def _stream_response(
                 yield _build_chunk(msg_id, model, created=created_t, reasoning=buffer)
 
             if collected_tool_calls:
-                # 原生 tool_calls 直接输出（OpenAI 标准格式，附 index）
+                visible = _merge_question_visibility("".join(content_buffer_chunks), collected_tool_calls)
+                out_calls = (
+                    _rewrite_question_to_ask_user(collected_tool_calls)
+                    if prefer_ask_user else collected_tool_calls
+                )
+                if visible:
+                    yield _build_chunk(msg_id, model, created=created_t, content=visible)
                 streaming_tc = []
-                for i, tc in enumerate(collected_tool_calls):
+                for i, tc in enumerate(out_calls):
                     item = {**tc, "index": i}
                     streaming_tc.append(item)
                 yield _build_chunk(msg_id, model, created=created_t,
@@ -724,9 +982,13 @@ async def _stream_response(
             buffer = ""
             in_think = False
             last_usage = None
+            body_sent = False
 
             pending_text = ""
-            async for sse_data in client.stream_api(query, thinking, model, multi_medias, tools=tools):
+            async for sse_data in client.stream_api(
+                query, thinking, model, multi_medias, tools=tools,
+                reasoning_effort=reasoning_effort,
+            ):
                 if sse_data.get("type") == "usage":
                     last_usage = sse_data
                     continue
@@ -745,6 +1007,7 @@ async def _stream_response(
                                 clean = _clean_response_text(safe)
                                 if clean:
                                     yield _build_chunk(msg_id, model, created=created_t, content=clean)
+                                    body_sent = True
                             in_think = True
                             buffer = buffer[idx + len(THINK_OPEN):]
                             continue
@@ -754,6 +1017,7 @@ async def _stream_response(
                             clean = _clean_response_text(safe)
                             if clean:
                                 yield _build_chunk(msg_id, model, created=created_t, content=clean)
+                                body_sent = True
                         buffer = keep
                         break
                     else:
@@ -1463,7 +1727,9 @@ async def _do_response_chat(body: dict, account) -> tuple:
             _, openai_messages = await compress_messages(openai_messages, effective_model, client)
         else:
             openai_messages = truncate_messages(openai_messages)
-    query = build_query_from_messages(openai_messages, tools=tools_dict)
+    query = build_query_from_messages(
+        openai_messages, tools=tools_dict, passthrough=config_manager.config.tools_passthrough
+    )
 
     thinking = False
     try:
@@ -1505,17 +1771,20 @@ async def _do_response_chat(body: dict, account) -> tuple:
         items.append(_response_reasoning_item(think_content))
         has_thinking = True
 
-    # 工具调用提取
+    # 工具调用提取：优先原生 tool_calls，无则回退文本解析
     tool_names = []
     tool_calls = None
     if tools_dict:
         tool_names = get_tool_names(tools_dict)
-        result = extract_tool_call(content, tool_names)
-        if result:
-            if result[0]:
-                tool_calls = result[0]
-            if result[1] is not None:
-                content = result[1]  # 使用清理后的文本（含 WorkBuddyML 残留清理）
+        if native_tool_calls:
+            tool_calls = _normalize_native_tool_calls(native_tool_calls)
+        else:
+            result = extract_tool_call(content, tool_names)
+            if result:
+                if result[0]:
+                    tool_calls = result[0]
+                if result[1] is not None:
+                    content = result[1]
 
     # 未命中工具调用时兜底清洗标记残留；命中时 extract_tool_call 已返回清洗后文本，不可再 clean（会抹掉标记）
     if not tool_calls:
@@ -1608,7 +1877,9 @@ async def _stream_response_events(body: dict, account):
             _, openai_messages = await compress_messages(openai_messages, effective_model, client)
         else:
             openai_messages = truncate_messages(openai_messages)
-    query = build_query_from_messages(openai_messages, tools=tools_dict)
+    query = build_query_from_messages(
+        openai_messages, tools=tools_dict, passthrough=config_manager.config.tools_passthrough
+    )
     thinking = False
 
     response_id = body.get("_response_id") or _gen_response_id()
@@ -1671,6 +1942,33 @@ async def _stream_response_events(body: dict, account):
             ):
                 if sse_data.get("type") == "usage":
                     api_usage = sse_data
+                    continue
+                if sse_data.get("type") == "tool_calls":
+                    for tc in sse_data.get("calls") or []:
+                        if not (tc.get("function") or {}).get("name"):
+                            continue
+                        idx = len(tool_calls_map)
+                        fc_item = _response_function_call_item(tc)
+                        fc_id = fc_item["id"]
+                        tool_calls_map[idx] = {
+                            "id": fc_id,
+                            "call_id": fc_item.get("call_id", fc_id),
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"].get("arguments") or "{}",
+                            "status": "completed",
+                        }
+                        added_item = {k: v for k, v in fc_item.items() if k != "arguments"}
+                        oi, start_evt = _start_output_item(added_item)
+                        if start_evt:
+                            yield start_evt
+                        yield {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": fc_id,
+                            "output_index": oi,
+                            "delta": fc_item.get("arguments") or "{}",
+                        }
+                    continue
+                if sse_data.get("type") == "finish":
                     continue
                 chunk = sse_data.get("content", "")
                 if not chunk:

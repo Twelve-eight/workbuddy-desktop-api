@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import AsyncIterator, Optional, Tuple
 
 import httpx
@@ -26,7 +27,10 @@ from .workbuddy_session import (
     list_remote_models,
 )
 
-TIMEOUT = 180.0
+# 主对话 HTTP 超时（秒）。默认 0 = 不限：思考+输出整条流纯透传，不设代理侧时限。
+# 需要保护时显式设 MIMO_CLIENT_TIMEOUT=600 等。
+_t = float(os.getenv("MIMO_CLIENT_TIMEOUT", "0") or "0")
+TIMEOUT = None if _t <= 0 else _t
 # 不要替用户塞默认 max_tokens。
 # 实测（hy3）：max_tokens 是「reasoning + 正文」的合计预算——
 #   - 不传：上游不限，模型充分思考后正常输出正文（写 3000 字长文正常推进）
@@ -272,6 +276,7 @@ class WorkBuddyClient:
         attachments: list | None = None,
         tools: list | None = None,
         stream: bool = False,
+        reasoning_effort: str | None = None,
     ) -> dict:
         parts: list = [{"type": "text", "text": query}]
         for m in multi_medias or []:
@@ -297,12 +302,21 @@ class WorkBuddyClient:
             "messages": [{"role": "user", "content": content}],
             "stream": stream,
         }
+        # Thinking parameters, per the CodeBuddy contract (cross-checked against
+        # the fork DEVLOG and CangShui's applyThinkingRules):
+        #   * reasoning_summary=auto lets the upstream pick the depth. The old
+        #     hardcoded effort=medium made it emit content=0 (the body was eaten
+        #     by reasoning) and drew 11-128 from content safety.
+        #   * reasoning_effort is forwarded ONLY when the client actually set a
+        #     level; with thinking on and no level we fall back to high, matching
+        #     xiaomi / MiMo2API.
+        # Callers pass thinking=False and no level for off/none, so nothing is sent.
         if thinking:
-            # 上游 CodeBuddy 规范(参考 workbuddy-gateway/CangShui):客户端显式
-            # 思考时设 reasoning_summary=auto 让上游自行决定深度;绝不硬编码
-            # 具体 effort - 实测 effort=medium 时正文被思考吞掉(content=0),
-            # 且腾讯内容安全对不规范 effort 会拦截(11128).off/none 时删除.
             body["reasoning_summary"] = "auto"
+        if reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
+        elif thinking:
+            body["reasoning_effort"] = "high"
         norm_tools = self._normalize_tools(tools)
         if norm_tools:
             body["tools"] = norm_tools
@@ -352,9 +366,12 @@ class WorkBuddyClient:
     async def call_api(
         self, query: str, thinking: bool = False, model: str = "hy3",
         multi_medias: list | None = None, attachments: list | None = None,
-        tools: list | None = None,
+        tools: list | None = None, reasoning_effort: str | None = None,
     ) -> Tuple[str, str, dict, list, list]:
-        body = self._query_body(query, thinking, model, multi_medias, attachments, tools=tools)
+        body = self._query_body(
+            query, thinking, model, multi_medias, attachments,
+            tools=tools, reasoning_effort=reasoning_effort,
+        )
         data = await self.chat_completion_json(body)
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -378,9 +395,12 @@ class WorkBuddyClient:
     async def stream_api(
         self, query: str, thinking: bool = False, model: str = "hy3",
         multi_medias: list | None = None, attachments: list | None = None,
-        tools: list | None = None,
+        tools: list | None = None, reasoning_effort: str | None = None,
     ) -> AsyncIterator[dict]:
-        body = self._query_body(query, thinking, model, multi_medias, attachments, tools=tools, stream=True)
+        body = self._query_body(
+            query, thinking, model, multi_medias, attachments,
+            tools=tools, stream=True, reasoning_effort=reasoning_effort,
+        )
         body["stream_options"] = {"include_usage": True}
         client = httpx.AsyncClient(timeout=TIMEOUT)
         tc_acc: dict = {}

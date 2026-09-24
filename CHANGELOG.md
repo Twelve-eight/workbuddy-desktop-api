@@ -2,6 +2,48 @@
 
 本文件记录 workbuddy-desktop-api 的重要变更。协议层历史继承自 [xiaomi-mimo-desktop-api](https://github.com/Fly143/xiaomi-mimo-desktop-api)。
 
+## [v1.2.3.4] — 2026-09-16
+
+### 修复
+- **Responses 丢原生 `tool_calls`** — 非流式未用 `native_tool_calls`、流式忽略 `type=tool_calls`，导致联网/写文件工具不出现在 output；已修
+
+## [v1.2.3.3] — 2026-09-14
+
+### 修复
+- **Anthropic / Responses / batch 路径补传 `tools_passthrough`** — 之前漏传导致默认 False，向 query 注入工具格式说明书；RikkaHub 走 `/v1/messages` 时会看到
+- Chat 路径原本已传；本轮补齐所有 `build_query_from_messages` 调用点
+
+## [v1.2.3.2] — 2026-09-14
+
+### 变更
+- **`reasoning_effort` 纯透传** — 去掉写死的 `medium`；客户端传 `low`/`medium`/`high` 原样下传
+- 仅 `thinking=true` 且无档位时默认 `high`（与 xiaomi / MiMo2API 策略对齐）
+
+## [v1.2.3.1] — 2026-09-14
+
+### 修复
+- **v1.2.3 用错提问工具名** — WorkBuddy 上游是 **\AskUserQuestion\**（别名 \sk_user_question\ / \sk_followup_question\），不是 MiMo Desktop 的 \question\。v1.2.3 注入/改写了错误工具，交互提问无法触发
+- 按 app.asar schema 修正：\questions\ 1–4；\options\ 2–4；\header\≤12；\multiSelect- 客户端只带 RikkaHub \sk_user\ 时注入 \AskUserQuestion\，响应改写回 \sk_user\；已声明该工具则透传
+
+## [v1.2.3] — 2026-09-12
+
+> ⚠️ 本 tag 选项卡片工具名有误，请改用 **\1.2.3.1\**。
+
+
+### 变更
+- **主对话 HTTP 超时默认不限** — `MIMO_CLIENT_TIMEOUT` 默认 `0`（`timeout=None`）；思考+输出整条流纯透传，不再被 600s 掐断。需要保护时显式设秒数
+- **README 补全 Anthropic 模型别名表** — 与 `_resolve_anthropic_model` 一致（4.7/日期后缀/`-latest`/启发式）
+
+### 修复（RikkaHub / Desktop 选项卡片）
+- **Desktop `question` 工具选项可见** — 选项物化到 `content`，避免普通客户端只看到很短正文
+- **映射 `question` → RikkaHub `ask_user`** — 仅当客户端只带 `ask_user` 时改写；声明了 `question` 的客户端原样透传，互不影响
+- **客户端仅带 `ask_user` 时向上游注入 `AskUserQuestion`** — WorkBuddy 工具名是 `AskUserQuestion`（非 MiMo `question`），schema 含 header/multiSelect
+
+## [v1.2.2] — 2026-09-12
+
+### 变更
+- **HTTP 超时默认 600s** — 与 Desktop 对齐，可用 `MIMO_CLIENT_TIMEOUT` 覆盖
+
 ## [v1.2.1] — 2026-09-11
 
 ### 变更
@@ -322,3 +364,4 @@
 | `no-tools` | 纯对话代理 + TTS（语音合成、音色设计、语音克隆、导演模式） |
 
 日常使用推荐 no-tools 分支（上下文更干净，输出质量更高）。如需 TTS 功能直接使用 no-tools。
+
