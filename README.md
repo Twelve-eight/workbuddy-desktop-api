@@ -11,6 +11,10 @@
 
 本项目由 [xiaomi-mimo-desktop-api](https://github.com/Fly143/xiaomi-mimo-desktop-api) 改造而来：保留协议与业务层，上游从小米 MiMo Desktop 换为 WorkBuddy Desktop。
 
+> ⚠️ **这是 [`Fly143/workbuddy-desktop-api`](https://github.com/Fly143/workbuddy-desktop-api) 的 fork。**
+> 本 fork 把会话层整体切到**国际版（WorkBuddy AI）**并补了若干上游兼容性修复；上游的修复已全部合流。
+> 与上游的完整差异见 **[FORK.md](FORK.md)**。只想用上游的话，请直接用上游仓库。
+
 > 📖 [English Version](README_EN.md)
 
 ## 目录

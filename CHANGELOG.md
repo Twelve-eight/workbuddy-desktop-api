@@ -2,6 +2,32 @@
 
 本文件记录 workbuddy-desktop-api 的重要变更。协议层历史继承自 [xiaomi-mimo-desktop-api](https://github.com/Fly143/xiaomi-mimo-desktop-api)。
 
+## [fork] — 2026-09-24 — 合流上游 v1.2.3.4 + 国际版适配
+
+> 本节记录**本 fork 相对上游**的变更。上游自身的历史见下方各节。完整差异见 [FORK.md](FORK.md)。
+
+### 合流
+- **合流上游 25 个提交（至 v1.2.3.4）**，上游独有提交归零
+- 冲突仅 1 处：`app/workbuddy_client.py` 的思考参数。两边修的是**同一个缺陷**（写死 `reasoning_effort=medium`
+  导致 `content=0` 与 11-128），方向互补——本 fork 用 `reasoning_summary=auto`，上游用「透传 + 默认 high」。
+  按 CodeBuddy 契约**两者都保留**，并支持上游新签名里的 `reasoning_effort` 参数。
+
+### 国际版适配（本 fork 独有）
+- `app/workbuddy_session.py`：`API_BASE` → `www.workbuddy.ai`、
+  `AUTH_FILE_NAME` → `workbuddy-desktop-ai.info`、`DEFAULT_DOMAIN` → `www.workbuddy.ai`
+
+### 上游兼容性修复（本 fork 独有）
+- 首条消息非 system 时自动补一条（否则上游 11-128）
+- 工具结果截断：头 60% + 尾 40%，默认 3000 字符，`WORKBUDDY_TRUNCATE_TOOL_RESULTS` 可调
+- `app/routes.py`：新增 `deepseek-v4.1-flash` 与 `_append_extra_models()`
+
+### 运维脚本（本 fork 独有）
+- `supervisor.py`、`install-svc.cmd` / `uninstall-svc.cmd`、`gateway-window.cmd`、
+  `start.cmd`、`.omp/hooks/pre/backup.ts`、`DEVLOG.md`
+
+### 状态
+- 已归档至工作区 `archive/retired/`，功能由 `workbuddy2api` 取代，保留作历史参考。
+
 ## [v1.2.3.4] — 2026-09-16
 
 ### 修复
